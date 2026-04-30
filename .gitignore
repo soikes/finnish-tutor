@@ -1,0 +1,28 @@
+# Rust
+server/target/
+
+# Models (large ONNX files, downloaded by script)
+models/*.onnx
+models/*.bin
+models/*.onnx.json
+
+# Environment
+.env
+
+# Expo / Node
+app/node_modules/
+app/.expo/
+app/dist/
+
+# Terraform
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/.terraform.lock.hcl
+infra/terraform.tfvars
+
+# TLS certs
+*.pem
+
+# OS
+.DS_Store
