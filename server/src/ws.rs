@@ -96,6 +96,10 @@ pub async fn handle_connection(socket: WebSocket, pipeline: Arc<Pipeline>) {
                             tracing::info!("Session stopped");
                             pipeline.reset().await;
                         }
+                        Some("cancel") => {
+                            tracing::info!("Cancel response requested");
+                            pipeline.cancel_response().await;
+                        }
                         _ => {}
                     }
                 }

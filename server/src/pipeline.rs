@@ -186,4 +186,12 @@ impl Pipeline {
         self.vad.lock().await.reset();
         self.history.lock().await.clear();
     }
+
+    /// Abort any in-flight response without clearing history or VAD state.
+    pub async fn cancel_response(&self) {
+        if let Some(handle) = self.response_task.lock().await.take() {
+            tracing::info!("Pipeline: cancelling in-flight response (user-requested)");
+            handle.abort();
+        }
+    }
 }

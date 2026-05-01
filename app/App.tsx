@@ -35,6 +35,7 @@ export default function App() {
   const audioQueueRef = useRef<ArrayBuffer[]>([]);
   const isPlayingRef = useRef(false);
   const audioStreamEndedRef = useRef(false);
+  const playbackCancelledRef = useRef(false);
   const currentSoundRef = useRef<Audio.Sound | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
   const streamInitRef = useRef(false);
@@ -78,6 +79,7 @@ export default function App() {
             console.log("[WS] audio_start");
             setStatus("speaking");
             audioStreamEndedRef.current = false;
+            playbackCancelledRef.current = false;
             beginPlaybackSession();
             break;
           case "audio_end":
@@ -94,7 +96,10 @@ export default function App() {
             break;
         }
       } else {
-        // Binary audio data from TTS — one segment per chunk
+        // Binary audio data from TTS — one segment per chunk.
+        // Drop chunks that arrive after the user interrupted playback;
+        // they may still be in flight from the server.
+        if (playbackCancelledRef.current) return;
         const buf = event.data as ArrayBuffer;
         console.log("[WS] audio chunk:", buf.byteLength, "bytes");
         audioQueueRef.current.push(buf);
@@ -118,6 +123,7 @@ export default function App() {
 
   // Stop any in-progress playback
   const stopPlayback = async () => {
+    playbackCancelledRef.current = true;
     audioQueueRef.current = [];
     audioStreamEndedRef.current = true;
     if (currentSoundRef.current) {
@@ -129,6 +135,14 @@ export default function App() {
     }
     isPlayingRef.current = false;
     await endPlaybackSession();
+  };
+
+  // User-initiated cancel: stop locally and tell the server to abort.
+  const cancelResponse = () => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "cancel" }));
+    }
+    stopPlayback();
   };
 
   // Set up audio session for playback (pause mic, switch mode)
@@ -170,6 +184,10 @@ export default function App() {
 
     try {
       while (audioQueueRef.current.length > 0) {
+        if (playbackCancelledRef.current) {
+          audioQueueRef.current = [];
+          break;
+        }
         const pcm = audioQueueRef.current.shift()!;
         const wavBuffer = createWavBuffer(new Uint8Array(pcm), 22050);
         const base64 = arrayBufferToBase64(wavBuffer);
@@ -322,27 +340,55 @@ export default function App() {
         style={styles.messageList}
         contentContainerStyle={styles.messageContent}
       >
-        {messages.map((msg, i) => (
-          <View
-            key={i}
-            style={[
-              styles.messageBubble,
-              msg.role === "user" ? styles.userBubble : styles.assistantBubble,
-            ]}
-          >
-            <Text
+        {messages.map((msg, i) => {
+          const isLastAssistant =
+            msg.role === "assistant" && i === messages.length - 1;
+          const showStop = isLastAssistant && status === "speaking";
+          return (
+            <View
+              key={i}
               style={[
-                styles.messageText,
-                msg.role === "user" ? styles.userText : styles.assistantText,
+                styles.messageRow,
+                msg.role === "user"
+                  ? styles.messageRowUser
+                  : styles.messageRowAssistant,
               ]}
             >
-              {renderFinnishTags(
-                msg.text,
-                msg.role === "user" ? "#1a1a2e" : "#4ecdc4",
+              <View
+                style={[
+                  styles.messageBubble,
+                  msg.role === "user"
+                    ? styles.userBubble
+                    : styles.assistantBubble,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.messageText,
+                    msg.role === "user"
+                      ? styles.userText
+                      : styles.assistantText,
+                  ]}
+                >
+                  {renderFinnishTags(
+                    msg.text,
+                    msg.role === "user" ? "#1a1a2e" : "#4ecdc4",
+                  )}
+                </Text>
+              </View>
+              {showStop && (
+                <TouchableOpacity
+                  onPress={cancelResponse}
+                  style={styles.stopButton}
+                  activeOpacity={0.7}
+                  hitSlop={8}
+                >
+                  <Text style={styles.stopButtonText}>⏹</Text>
+                </TouchableOpacity>
               )}
-            </Text>
-          </View>
-        ))}
+            </View>
+          );
+        })}
       </ScrollView>
 
       <TouchableOpacity
@@ -473,19 +519,40 @@ const styles = StyleSheet.create({
   messageContent: {
     paddingBottom: 10,
   },
+  messageRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  messageRowUser: {
+    justifyContent: "flex-end",
+  },
+  messageRowAssistant: {
+    justifyContent: "flex-start",
+  },
   messageBubble: {
     maxWidth: "85%",
     padding: 12,
     borderRadius: 16,
-    marginBottom: 8,
+  },
+  stopButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#ff6b6b",
+    justifyContent: "center",
+    alignItems: "center",
+    marginLeft: 8,
+  },
+  stopButtonText: {
+    color: "#fff",
+    fontSize: 14,
   },
   userBubble: {
-    alignSelf: "flex-end",
     backgroundColor: "#4ecdc4",
     borderBottomRightRadius: 4,
   },
   assistantBubble: {
-    alignSelf: "flex-start",
     backgroundColor: "#2d2d44",
     borderBottomLeftRadius: 4,
   },
