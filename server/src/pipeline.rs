@@ -4,6 +4,7 @@ use crate::tts::TextToSpeech;
 use crate::vad::VoiceActivityDetector;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinHandle;
 
 /// Per-connection voice pipeline state.
 pub struct Pipeline {
@@ -12,6 +13,8 @@ pub struct Pipeline {
     llm: Arc<ChatClient>,
     tts: Arc<TextToSpeech>,
     history: Mutex<Vec<Message>>,
+    /// Handle to the in-flight response task, if any.
+    response_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// Events emitted by the pipeline for the WebSocket handler to send to the client.
@@ -21,6 +24,7 @@ pub enum PipelineEvent {
     AudioStart,
     Audio(Vec<i16>),
     AudioEnd,
+    Interrupt,
     Error(String),
 }
 
@@ -37,20 +41,14 @@ impl Pipeline {
             llm,
             tts,
             history: Mutex::new(Vec::new()),
+            response_task: Mutex::new(None),
         }
     }
 
-    /// Process incoming audio samples. Sends pipeline events to the channel
-    /// as they happen so the client gets transcription immediately.
-    pub async fn process_audio(&self, samples: &[i16], tx: &mpsc::Sender<PipelineEvent>) {
-        // Log audio level to verify we're getting real audio
-        if !samples.is_empty() {
-            let rms = (samples.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / samples.len() as f64).sqrt();
-            let max = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
-            tracing::debug!("Pipeline: {} samples, RMS={:.0}, max={max}", samples.len(), rms);
-        }
-
-        // Run VAD to detect complete utterances
+    /// Process incoming audio through VAD only. If an utterance is detected,
+    /// cancel any in-flight response and spawn a new response task.
+    pub async fn process_audio(self: &Arc<Self>, samples: &[i16], tx: &mpsc::Sender<PipelineEvent>) {
+        // Run VAD
         let utterance = {
             let mut vad = self.vad.lock().await;
             match vad.process(samples) {
@@ -69,13 +67,36 @@ impl Pipeline {
                 u
             }
             Some(u) => {
-                tracing::debug!("Pipeline: VAD utterance too short ({} samples, need >1600), discarding", u.len());
+                tracing::debug!("Pipeline: VAD utterance too short ({} samples), discarding", u.len());
                 return;
             }
             _ => return,
         };
 
-        // STT: transcribe the utterance
+        // Cancel any in-flight response
+        {
+            let mut task = self.response_task.lock().await;
+            if let Some(handle) = task.take() {
+                tracing::info!("Pipeline: interrupting in-flight response");
+                handle.abort();
+                let _ = tx.send(PipelineEvent::Interrupt).await;
+            }
+        }
+
+        // Spawn response generation as a background task
+        let pipeline = Arc::clone(self);
+        let tx = tx.clone();
+        let handle = tokio::spawn(async move {
+            pipeline.generate_response(utterance, &tx).await;
+        });
+
+        *self.response_task.lock().await = Some(handle);
+    }
+
+    /// Run STT → LLM → TTS for a detected utterance. Runs in a spawned task
+    /// so it can be cancelled if the user interrupts.
+    async fn generate_response(&self, utterance: Vec<i16>, tx: &mpsc::Sender<PipelineEvent>) {
+        // STT
         let stt_start = std::time::Instant::now();
         let transcription = match self.stt.transcribe(&utterance).await {
             Ok(text) => text,
@@ -95,7 +116,7 @@ impl Pipeline {
         tracing::info!("Pipeline: transcription: {:?}", transcription);
         let _ = tx.send(PipelineEvent::Transcription(transcription.clone())).await;
 
-        // LLM: get response
+        // LLM
         let llm_start = std::time::Instant::now();
         let history = self.history.lock().await.clone();
         let response = match self.llm.chat(&history, &transcription).await {
@@ -121,29 +142,47 @@ impl Pipeline {
                 content: response.clone(),
             });
 
-            // Keep history bounded (last 20 messages)
             if history.len() > 20 {
                 let drain_count = history.len() - 20;
                 history.drain(..drain_count);
             }
         }
 
-        // TTS: synthesize response audio
+        // TTS — stream audio per segment so the client can start playing
+        // before the whole response is synthesized.
         let tts_start = std::time::Instant::now();
         let _ = tx.send(PipelineEvent::AudioStart).await;
-        match self.tts.synthesize(&response) {
-            Ok(audio) => {
-                tracing::info!("Pipeline: TTS took {:?}, produced {} samples", tts_start.elapsed(), audio.len());
-                let _ = tx.send(PipelineEvent::Audio(audio)).await;
+        let tts = Arc::clone(&self.tts);
+        let response_clone = response.clone();
+        let tx_blocking = tx.clone();
+        let tts_result = tokio::task::spawn_blocking(move || {
+            tts.synthesize_streaming(&response_clone, |samples| {
+                let _ = tx_blocking.blocking_send(PipelineEvent::Audio(samples));
+            })
+        })
+        .await;
+        match tts_result {
+            Ok(Ok(())) => {
+                tracing::info!("Pipeline: TTS took {:?}", tts_start.elapsed());
+            }
+            Ok(Err(e)) => {
+                let _ = tx.send(PipelineEvent::Error(format!("TTS error: {e}"))).await;
             }
             Err(e) => {
-                let _ = tx.send(PipelineEvent::Error(format!("TTS error: {e}"))).await;
+                let _ = tx.send(PipelineEvent::Error(format!("TTS task error: {e}"))).await;
             }
         }
         let _ = tx.send(PipelineEvent::AudioEnd).await;
+
+        // Clear ourselves from the response_task slot
+        *self.response_task.lock().await = None;
     }
 
     pub async fn reset(&self) {
+        // Cancel in-flight response
+        if let Some(handle) = self.response_task.lock().await.take() {
+            handle.abort();
+        }
         self.vad.lock().await.reset();
         self.history.lock().await.clear();
     }

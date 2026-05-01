@@ -45,6 +45,11 @@ pub async fn handle_connection(socket: WebSocket, pipeline: Arc<Pipeline>) {
                     let json = serde_json::json!({"type": "audio_end"});
                     sender.send(Message::Text(json.to_string().into())).await
                 }
+                PipelineEvent::Interrupt => {
+                    tracing::info!("WS: sending interrupt");
+                    let json = serde_json::json!({"type": "interrupt"});
+                    sender.send(Message::Text(json.to_string().into())).await
+                }
                 PipelineEvent::Error(msg) => {
                     tracing::error!("Pipeline error: {msg}");
                     let json = serde_json::json!({"type": "error", "message": msg});

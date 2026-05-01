@@ -14,7 +14,12 @@ import LiveAudioStream from "react-native-live-audio-stream";
 // Server listens on WireGuard interface — no TLS needed, tunnel is encrypted
 const SERVER_URL = "ws://10.0.0.1:8080/ws";
 
-type AppStatus = "idle" | "connecting" | "listening" | "processing" | "speaking";
+type AppStatus =
+  | "idle"
+  | "connecting"
+  | "listening"
+  | "processing"
+  | "speaking";
 
 interface Message {
   role: "user" | "assistant";
@@ -29,13 +34,18 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const audioQueueRef = useRef<ArrayBuffer[]>([]);
   const isPlayingRef = useRef(false);
+  const audioStreamEndedRef = useRef(false);
+  const currentSoundRef = useRef<Audio.Sound | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
   const streamInitRef = useRef(false);
   const micActiveRef = useRef(false);
 
   // Connect WebSocket
   const connect = useCallback(() => {
-    console.log("[WS] connect() called, current state:", wsRef.current?.readyState);
+    console.log(
+      "[WS] connect() called, current state:",
+      wsRef.current?.readyState,
+    );
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     setStatus("connecting");
@@ -55,10 +65,7 @@ export default function App() {
         const msg = JSON.parse(event.data);
         switch (msg.type) {
           case "transcription":
-            setMessages((prev) => [
-              ...prev,
-              { role: "user", text: msg.text },
-            ]);
+            setMessages((prev) => [...prev, { role: "user", text: msg.text }]);
             setStatus("processing");
             break;
           case "response":
@@ -68,12 +75,18 @@ export default function App() {
             ]);
             break;
           case "audio_start":
+            console.log("[WS] audio_start");
             setStatus("speaking");
+            audioStreamEndedRef.current = false;
+            beginPlaybackSession();
             break;
           case "audio_end":
-            playAudioQueue().then(() => {
-              setStatus(micActive ? "listening" : "idle");
-            });
+            audioStreamEndedRef.current = true;
+            // Playback loop will finish naturally when queue drains
+            break;
+          case "interrupt":
+            console.log("[WS] Interrupt received, stopping playback");
+            stopPlayback();
             break;
           case "error":
             console.error("Server error:", msg.message);
@@ -81,8 +94,11 @@ export default function App() {
             break;
         }
       } else {
-        // Binary audio data from TTS
-        audioQueueRef.current.push(event.data as ArrayBuffer);
+        // Binary audio data from TTS — one segment per chunk
+        const buf = event.data as ArrayBuffer;
+        console.log("[WS] audio chunk:", buf.byteLength, "bytes");
+        audioQueueRef.current.push(buf);
+        playNextChunk();
       }
     };
 
@@ -100,67 +116,89 @@ export default function App() {
     wsRef.current = ws;
   }, []);
 
-  // Play received audio
-  const playAudioQueue = async () => {
-    if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
-    isPlayingRef.current = true;
+  // Stop any in-progress playback
+  const stopPlayback = async () => {
+    audioQueueRef.current = [];
+    audioStreamEndedRef.current = true;
+    if (currentSoundRef.current) {
+      try {
+        await currentSoundRef.current.stopAsync();
+        await currentSoundRef.current.unloadAsync();
+      } catch (_) {}
+      currentSoundRef.current = null;
+    }
+    isPlayingRef.current = false;
+    await endPlaybackSession();
+  };
 
+  // Set up audio session for playback (pause mic, switch mode)
+  const beginPlaybackSession = async () => {
     try {
-      // Concatenate all audio buffers
-      const totalLength = audioQueueRef.current.reduce(
-        (sum, buf) => sum + buf.byteLength,
-        0
-      );
-      const combined = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const buf of audioQueueRef.current) {
-        combined.set(new Uint8Array(buf), offset);
-        offset += buf.byteLength;
-      }
-      audioQueueRef.current = [];
-
-      // Create WAV header for the PCM data
-      // Server sends 16-bit LE PCM at 22050 Hz (Piper TTS output)
-      const wavBuffer = createWavBuffer(combined, 22050);
-
-      // Convert to base64 for expo-av
-      const base64 = arrayBufferToBase64(wavBuffer);
-      const uri = `data:audio/wav;base64,${base64}`;
-
-      // Pause recording so iOS releases the audio session for playback
       LiveAudioStream.stop();
-
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
         playsInSilentModeIOS: true,
       });
+    } catch (e) {
+      console.error("beginPlaybackSession error:", e);
+    }
+  };
 
-      const { sound } = await Audio.Sound.createAsync({ uri });
-      await sound.playAsync();
-
-      // Wait for playback to finish
-      await new Promise<void>((resolve) => {
-        sound.setOnPlaybackStatusUpdate((playbackStatus) => {
-          if (playbackStatus.isLoaded && playbackStatus.didJustFinish) {
-            resolve();
-          }
-        });
-      });
-
-      await sound.unloadAsync();
-
-      // Resume recording if mic is still active
+  // Restore audio session after playback (resume mic if active)
+  const endPlaybackSession = async () => {
+    try {
       if (micActiveRef.current) {
         await Audio.setAudioModeAsync({
           allowsRecordingIOS: true,
           playsInSilentModeIOS: true,
         });
         LiveAudioStream.start();
+        setStatus("listening");
+      } else {
+        setStatus("idle");
+      }
+    } catch (e) {
+      console.error("endPlaybackSession error:", e);
+    }
+  };
+
+  // Drain playback queue: play one chunk at a time as they arrive
+  const playNextChunk = async () => {
+    if (isPlayingRef.current) return;
+    if (audioQueueRef.current.length === 0) return;
+    isPlayingRef.current = true;
+
+    try {
+      while (audioQueueRef.current.length > 0) {
+        const pcm = audioQueueRef.current.shift()!;
+        const wavBuffer = createWavBuffer(new Uint8Array(pcm), 22050);
+        const base64 = arrayBufferToBase64(wavBuffer);
+        const uri = `data:audio/wav;base64,${base64}`;
+
+        const { sound } = await Audio.Sound.createAsync({ uri });
+        currentSoundRef.current = sound;
+        await sound.playAsync();
+
+        await new Promise<void>((resolve) => {
+          sound.setOnPlaybackStatusUpdate((s) => {
+            if (s.isLoaded && s.didJustFinish) resolve();
+          });
+        });
+
+        await sound.unloadAsync();
+        currentSoundRef.current = null;
       }
     } catch (error) {
       console.error("Audio playback error:", error);
     } finally {
       isPlayingRef.current = false;
+      // If server signaled end and queue is empty, restore mic
+      if (
+        audioStreamEndedRef.current &&
+        audioQueueRef.current.length === 0
+      ) {
+        await endPlaybackSession();
+      }
     }
   };
 
@@ -274,7 +312,7 @@ export default function App() {
     <View style={styles.container}>
       <StatusBar style="light" />
 
-      <Text style={styles.title}>Finnish Tutor</Text>
+      <Text style={styles.title}>🇫🇮 Finnish Tutor</Text>
       <Text style={[styles.status, { color: statusColor[status] }]}>
         {statusText[status]}
       </Text>
@@ -295,22 +333,20 @@ export default function App() {
             <Text
               style={[
                 styles.messageText,
-                msg.role === "user"
-                  ? styles.userText
-                  : styles.assistantText,
+                msg.role === "user" ? styles.userText : styles.assistantText,
               ]}
             >
-              {renderFinnishTags(msg.text, msg.role === "user" ? "#1a1a2e" : "#4ecdc4")}
+              {renderFinnishTags(
+                msg.text,
+                msg.role === "user" ? "#1a1a2e" : "#4ecdc4",
+              )}
             </Text>
           </View>
         ))}
       </ScrollView>
 
       <TouchableOpacity
-        style={[
-          styles.micButton,
-          micActive && styles.micButtonActive,
-        ]}
+        style={[styles.micButton, micActive && styles.micButtonActive]}
         onPress={toggleMic}
         activeOpacity={0.7}
       >
@@ -344,7 +380,7 @@ function renderFinnishTags(text: string, boldColor: string): React.ReactNode[] {
       parts.push(
         <Text key={key++} style={{ fontWeight: "bold", color: boldColor }}>
           {afterTag}
-        </Text>
+        </Text>,
       );
       break;
     }
@@ -352,7 +388,7 @@ function renderFinnishTags(text: string, boldColor: string): React.ReactNode[] {
     parts.push(
       <Text key={key++} style={{ fontWeight: "bold", color: boldColor }}>
         {afterTag.slice(0, end)}
-      </Text>
+      </Text>,
     );
     remaining = afterTag.slice(end + 5);
   }

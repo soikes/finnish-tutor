@@ -10,12 +10,12 @@ echo "=> Silero VAD v5"
 curl -L -o "$MODELS_DIR/silero_vad.onnx" \
   "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
 
-# Piper English voice (en_US-lessac-medium)
-echo "=> Piper English voice (lessac-medium)"
-curl -L -o "$MODELS_DIR/en_US-lessac-medium.onnx" \
-  "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx"
-curl -L -o "$MODELS_DIR/en_US-lessac-medium.onnx.json" \
-  "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
+# Piper English voice (en_US-libritts-high)
+echo "=> Piper English voice (libritts-high)"
+curl -L -o "$MODELS_DIR/en_US-libritts-high.onnx" \
+  "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/libritts/high/en_US-libritts-high.onnx"
+curl -L -o "$MODELS_DIR/en_US-libritts-high.onnx.json" \
+  "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/libritts/high/en_US-libritts-high.onnx.json"
 
 # Piper Finnish voice (fi_FI-harri-medium)
 echo "=> Piper Finnish voice (harri-medium)"

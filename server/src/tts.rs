@@ -17,7 +17,7 @@ enum Segment {
 
 impl TextToSpeech {
     pub fn new(models_dir: &Path) -> anyhow::Result<Self> {
-        let en_config_path = models_dir.join("en_US-lessac-medium.onnx.json");
+        let en_config_path = models_dir.join("en_US-libritts-high.onnx.json");
         let fi_config_path = models_dir.join("fi_FI-harri-medium.onnx.json");
 
         let en_model = from_config_path(&en_config_path)
@@ -42,13 +42,16 @@ impl TextToSpeech {
         })
     }
 
-    /// Synthesize text that may contain `[fi]...[/fi]` tags.
-    /// Returns PCM audio samples as i16 at the model's sample rate.
-    pub fn synthesize(&self, text: &str) -> anyhow::Result<Vec<i16>> {
+    /// Synthesize text that may contain `[fi]...[/fi]` tags, emitting PCM
+    /// samples per segment via the callback so callers can stream audio.
+    pub fn synthesize_streaming(
+        &self,
+        text: &str,
+        mut on_segment: impl FnMut(Vec<i16>),
+    ) -> anyhow::Result<()> {
         let segments = parse_language_segments(text);
         tracing::info!("TTS: synthesizing {} segments from text ({} chars)", segments.len(), text.len());
         tracing::debug!("TTS: segments: {:?}", segments);
-        let mut all_samples: Vec<i16> = Vec::new();
 
         for segment in segments {
             let (synth, text) = match &segment {
@@ -68,29 +71,20 @@ impl TextToSpeech {
             };
             tracing::info!("TTS: synthesizing [{lang}] segment: {:?}", trimmed);
 
-            // Use parallel synthesis for each segment
             let stream = synth
                 .synthesize_parallel(trimmed.to_string(), None)
                 .map_err(|e| anyhow::anyhow!("TTS synthesis error: {e}"))?;
 
-            let mut segment_samples = 0usize;
+            let mut segment_samples: Vec<i16> = Vec::new();
             for result in stream {
                 let audio = result.map_err(|e| anyhow::anyhow!("TTS audio error: {e}"))?;
-                // Audio samples are f32, convert to i16
-                let samples = audio.samples.to_i16_vec();
-                segment_samples += samples.len();
-                all_samples.extend_from_slice(&samples);
+                segment_samples.extend_from_slice(&audio.samples.to_i16_vec());
             }
-            tracing::debug!("TTS: [{lang}] segment produced {} samples", segment_samples);
-
-            // Small pause between segments (~100ms of silence)
-            let silence_samples = (self.sample_rate as usize) / 10;
-            all_samples.extend(std::iter::repeat_n(0i16, silence_samples));
+            tracing::debug!("TTS: [{lang}] segment produced {} samples", segment_samples.len());
+            on_segment(segment_samples);
         }
 
-        let duration_ms = all_samples.len() as f64 / self.sample_rate as f64 * 1000.0;
-        tracing::info!("TTS: total output: {} samples ({:.0}ms at {}Hz)", all_samples.len(), duration_ms, self.sample_rate);
-        Ok(all_samples)
+        Ok(())
     }
 
     pub fn sample_rate(&self) -> u32 {

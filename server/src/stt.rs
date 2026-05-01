@@ -26,6 +26,7 @@ impl SpeechToText {
         let form = reqwest::multipart::Form::new()
             .text("model", WHISPER_MODEL)
             .text("response_format", "json")
+            .text("prompt", "The speaker is practicing Finnish (suomi) and English. Hei, kiitos, hyvää päivää, anteeksi.")
             .part(
                 "file",
                 reqwest::multipart::Part::bytes(wav_bytes)
