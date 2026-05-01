@@ -26,3 +26,6 @@ infra/terraform.tfvars
 
 # OS
 .DS_Store
+
+# Logs
+*.log
