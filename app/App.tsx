@@ -291,7 +291,9 @@ export default function App() {
     LiveAudioStream.stop();
     setMicActive(false);
     micActiveRef.current = false;
-    setStatus("idle");
+    // Don't clobber "speaking" — the user may still want to interrupt
+    // the assistant's current reply via the stop button.
+    setStatus((s) => (s === "speaking" ? s : "idle"));
   };
 
   // Toggle mic
