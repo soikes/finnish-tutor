@@ -46,6 +46,10 @@ impl ChatClient {
             "stream": true,
             "temperature": 0.7,
             "max_tokens": 512,
+            // Halt the moment the model tries to roleplay a new turn for
+            // either side. Catches the failure mode where it questions
+            // itself and burns tokens on a hallucinated dialogue.
+            "stop": ["\nUser:", "\nHuman:", "\nStudent:", "\nAssistant:"],
         });
 
         let resp = self
