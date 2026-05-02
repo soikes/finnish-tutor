@@ -145,34 +145,41 @@ export default function App() {
     stopPlayback();
   };
 
-  // Set up audio session for playback (pause mic, switch mode)
-  const beginPlaybackSession = async () => {
-    try {
-      LiveAudioStream.stop();
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-      });
-    } catch (e) {
-      console.error("beginPlaybackSession error:", e);
-    }
-  };
+  // Audio-mode transitions are serialized through a single promise chain
+  // and skipped when the desired mode already matches the current mode.
+  // Two concurrent setAudioModeAsync calls (e.g. cancel + new audio_start
+  // racing) can leave the AVAudioSession deactivated, breaking playback.
+  const audioModeRef = useRef<"recording" | "playback" | null>(null);
+  const audioModeChainRef = useRef<Promise<void>>(Promise.resolve());
 
-  // Restore audio session after playback (resume mic if active)
-  const endPlaybackSession = async () => {
-    try {
-      if (micActiveRef.current) {
+  const switchAudioMode = (mode: "recording" | "playback") => {
+    audioModeChainRef.current = audioModeChainRef.current.then(async () => {
+      if (audioModeRef.current === mode) return;
+      try {
         await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
+          allowsRecordingIOS: mode === "recording",
           playsInSilentModeIOS: true,
         });
-        LiveAudioStream.start();
-        setStatus("listening");
-      } else {
-        setStatus("idle");
+        audioModeRef.current = mode;
+      } catch (e) {
+        console.error(`switchAudioMode(${mode}) error:`, e);
       }
-    } catch (e) {
-      console.error("endPlaybackSession error:", e);
+    });
+    return audioModeChainRef.current;
+  };
+
+  const beginPlaybackSession = async () => {
+    LiveAudioStream.stop();
+    await switchAudioMode("playback");
+  };
+
+  const endPlaybackSession = async () => {
+    if (micActiveRef.current) {
+      await switchAudioMode("recording");
+      LiveAudioStream.start();
+      setStatus("listening");
+    } else {
+      setStatus("idle");
     }
   };
 
