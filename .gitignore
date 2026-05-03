@@ -1,4 +1,5 @@
 # Rust
+
 server/target/
 
 # Models (large ONNX files, downloaded by script)
@@ -29,3 +30,6 @@ infra/terraform.tfvars
 
 # Logs
 *.log
+
+# Opencode
+.opencode

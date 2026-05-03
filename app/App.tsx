@@ -157,7 +157,7 @@ export default function App() {
       if (audioModeRef.current === mode) return;
       try {
         await Audio.setAudioModeAsync({
-          allowsRecordingIOS: mode === "recording",
+          allowsRecordingIOS: false,
           playsInSilentModeIOS: true,
         });
         audioModeRef.current = mode;
@@ -218,10 +218,7 @@ export default function App() {
     } finally {
       isPlayingRef.current = false;
       // If server signaled end and queue is empty, restore mic
-      if (
-        audioStreamEndedRef.current &&
-        audioQueueRef.current.length === 0
-      ) {
+      if (audioStreamEndedRef.current && audioQueueRef.current.length === 0) {
         await endPlaybackSession();
       }
     }
@@ -266,7 +263,7 @@ export default function App() {
       }
 
       await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
+        allowsRecordingIOS: false,
         playsInSilentModeIOS: true,
       });
 
