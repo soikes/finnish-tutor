@@ -7,6 +7,7 @@ pub struct Config {
     pub prompt_path: PathBuf,
     pub models_dir: PathBuf,
     pub listen_addr: String,
+    pub auth_token: String,
 }
 
 impl Config {
@@ -19,8 +20,9 @@ impl Config {
             models_dir: env::var("MODELS_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("../models")),
-            // Listen on WireGuard interface by default
-            listen_addr: env::var("LISTEN_ADDR").unwrap_or_else(|_| "10.0.0.1:8080".to_string()),
+            // Loopback by default; Caddy terminates TLS and proxies to us
+            listen_addr: env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string()),
+            auth_token: env::var("AUTH_TOKEN").expect("AUTH_TOKEN must be set"),
         }
     }
 }

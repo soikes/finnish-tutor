@@ -11,8 +11,9 @@ import { Audio } from "expo-av";
 import LiveAudioStream from "react-native-live-audio-stream";
 
 // --- Configuration ---
-// Server listens on WireGuard interface — no TLS needed, tunnel is encrypted
-const SERVER_URL = "ws://10.0.0.1:8080/ws";
+// Baked in at build time via EXPO_PUBLIC_* env vars (app/.env locally, EAS env vars for builds)
+const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL ?? "ws://localhost:8080/ws";
+const AUTH_TOKEN = process.env.EXPO_PUBLIC_AUTH_TOKEN ?? "";
 
 type AppStatus =
   | "idle"
@@ -51,7 +52,10 @@ export default function App() {
 
     setStatus("connecting");
     console.log("[WS] Connecting to", SERVER_URL);
-    const ws = new WebSocket(SERVER_URL);
+    // RN's WebSocket supports a headers option as the third argument (not in TS types)
+    const ws = new (WebSocket as any)(SERVER_URL, null, {
+      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+    }) as WebSocket;
 
     ws.binaryType = "arraybuffer";
 
@@ -159,6 +163,7 @@ export default function App() {
         await Audio.setAudioModeAsync({
           allowsRecordingIOS: false,
           playsInSilentModeIOS: true,
+          staysActiveInBackground: true,
         });
         audioModeRef.current = mode;
       } catch (e) {
@@ -265,6 +270,7 @@ export default function App() {
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
         playsInSilentModeIOS: true,
+        staysActiveInBackground: true,
       });
 
       // Connect if not already

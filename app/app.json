@@ -15,9 +15,13 @@
     "ios": {
       "supportsTablet": false,
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Finnish Tutor needs microphone access to hear your speech for language practice."
+        "NSMicrophoneUsageDescription": "Finnish Tutor needs microphone access to hear your speech for language practice.",
+        "UIBackgroundModes": [
+          "audio"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       },
-      "bundleIdentifier": "com.anonymous.finnish-tutor"
+      "bundleIdentifier": "li.soikke.finnishtutor"
     },
     "android": {
       "adaptiveIcon": {
@@ -37,6 +41,12 @@
           "microphonePermission": "Finnish Tutor needs microphone access to hear your speech for language practice."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "24761bc8-094b-45b4-bab3-efe827c78c0f"
+      }
+    },
+    "owner": "mikesoikkeli"
   }
 }

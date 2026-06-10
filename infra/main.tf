@@ -31,7 +31,23 @@ resource "hcloud_firewall" "finnish_tutor" {
     protocol    = "udp"
     port        = "51820"
     source_ips  = ["0.0.0.0/0", "::/0"]
-    description = "WireGuard VPN"
+    description = "WireGuard VPN (admin only)"
+  }
+
+  rule {
+    direction   = "in"
+    protocol    = "tcp"
+    port        = "80"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+    description = "Caddy ACME HTTP challenge + redirect"
+  }
+
+  rule {
+    direction   = "in"
+    protocol    = "tcp"
+    port        = "443"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+    description = "Caddy HTTPS/WSS"
   }
 }
 

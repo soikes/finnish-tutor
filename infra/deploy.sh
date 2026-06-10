@@ -8,6 +8,7 @@ FIRST_RUN="${2:-}"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REMOTE_DIR="/opt/finnish-tutor"
 REMOTE_SRC="/opt/finnish-tutor/src"
+DOMAIN="finnish.soikke.li"
 
 # Install build deps on server if needed
 echo "=> Ensuring build dependencies..."
@@ -21,7 +22,22 @@ ssh "root@${SERVER_IP}" bash <<'DEPS'
         echo "Installing build tools..."
         apt-get update && apt-get install -y build-essential cmake clang pkg-config
     fi
+    if ! command -v caddy &>/dev/null; then
+        echo "Installing Caddy..."
+        apt-get update && apt-get install -y caddy
+    fi
 DEPS
+
+echo "=> Configuring Caddy for ${DOMAIN}..."
+ssh "root@${SERVER_IP}" bash <<CADDY
+    cat > /etc/caddy/Caddyfile <<EOF
+${DOMAIN} {
+    reverse_proxy localhost:8080
+}
+EOF
+    systemctl enable --now caddy
+    systemctl reload caddy
+CADDY
 
 echo "=> Uploading source..."
 rsync -az --delete \
@@ -81,13 +97,15 @@ EOF
         chmod 600 /etc/wireguard/wg0.conf
         wg syncconf wg0 <(wg-quick strip wg0)
 
-        # Create .env (preserves GROQ_API_KEY if already set)
+        # Create .env (preserves GROQ_API_KEY and AUTH_TOKEN if already set)
         EXISTING_KEY=\$(grep -oP 'GROQ_API_KEY=\K.*' ${REMOTE_DIR}/.env 2>/dev/null || echo 'REPLACE_ME')
+        EXISTING_TOKEN=\$(grep -oP 'AUTH_TOKEN=\K.*' ${REMOTE_DIR}/.env 2>/dev/null || openssl rand -hex 32)
         cat > ${REMOTE_DIR}/.env <<EOF
 GROQ_API_KEY=\$EXISTING_KEY
+AUTH_TOKEN=\$EXISTING_TOKEN
 PROMPT_PATH=${REMOTE_DIR}/prompt.md
 MODELS_DIR=${REMOTE_DIR}/models
-LISTEN_ADDR=10.0.0.1:8080
+LISTEN_ADDR=127.0.0.1:8080
 EOF
     "
 
@@ -103,13 +121,18 @@ AllowedIPs = 10.0.0.1/32
 PersistentKeepalive = 25"
 
     echo ""
-    echo "=== Phone WireGuard Config ==="
-    echo "Scan this QR code in the WireGuard app on your phone:"
+    echo "=== Admin WireGuard Config (optional, SSH/admin only — the app no longer uses it) ==="
+    echo "Scan this QR code in the WireGuard app if you want VPN access:"
     echo ""
     echo "$WG_CONFIG" | qrencode -t ansiutf8
     echo ""
-    echo "=== App Config ==="
-    echo "Set SERVER_URL in App.tsx to: ws://10.0.0.1:8080/ws"
+    AUTH_TOKEN=$(ssh "root@${SERVER_IP}" "grep -oP 'AUTH_TOKEN=\K.*' ${REMOTE_DIR}/.env")
+    echo "=== App Config (put these in app/.env and EAS env vars) ==="
+    echo "EXPO_PUBLIC_SERVER_URL=wss://${DOMAIN}/ws"
+    echo "EXPO_PUBLIC_AUTH_TOKEN=${AUTH_TOKEN}"
+    echo ""
+    echo "Reminder: DNS A record ${DOMAIN} -> ${SERVER_IP} must exist for Caddy to get a certificate."
+    echo "Note: re-running --first-run regenerates WireGuard client keys (existing WG phone configs break)."
     echo ""
 fi
 

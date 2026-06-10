@@ -8,10 +8,12 @@ mod ws;
 
 use axum::{
     extract::{State, WebSocketUpgrade},
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
     Router,
 };
+use subtle::ConstantTimeEq;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -75,9 +77,14 @@ async fn main() -> anyhow::Result<()> {
 
 async fn ws_handler(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    // No auth needed — server only listens on WireGuard interface
+    if !authorized(&headers, &state.config.auth_token) {
+        tracing::warn!("Rejected WebSocket connection with missing or invalid token");
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
     let vad = match VoiceActivityDetector::new(&state.config.models_dir) {
         Ok(v) => v,
         Err(e) => {
@@ -94,4 +101,15 @@ async fn ws_handler(
     ));
 
     ws.on_upgrade(move |socket| ws::handle_connection(socket, pipeline))
+}
+
+fn authorized(headers: &HeaderMap, expected_token: &str) -> bool {
+    let Some(provided) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return false;
+    };
+    provided.as_bytes().ct_eq(expected_token.as_bytes()).into()
 }
